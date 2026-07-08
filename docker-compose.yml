@@ -1,9 +1,8 @@
-#
-# Please consult the `Deployment` section in the docs if you want to deploy
-# this. You *need* to keep this nginx service, even if you have your own,
-# otherwise the static files will not be served correctly! If you do remove
-# it, configure yours similarly to what's in config/nginx.conf
-# Also take a look at the "Static files" section in the .env file
+# wger — compose "à plat" (sans include:) pour Portainer.
+# Équivalent au stack officiel, mais sans la directive `include:` qui déclenche
+# l'erreur "services.db conflicts with imported resource" sur les vieilles
+# versions de Docker Compose. Les dossiers ./config et ./services/config-powersync
+# du dépôt sont toujours nécessaires (ils sont clonés avec le repo).
 
 services:
   web:
@@ -33,13 +32,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  powersync:
-    depends_on:
-      db:
-        condition: service_healthy
-      web:
-        condition: service_healthy
-
   nginx:
     image: docker.io/nginx:stable
     logging:
@@ -64,23 +56,90 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── depuis services/postgres.yaml + surcharge du compose principal ──
   db:
+    image: docker.io/postgres:15-alpine
     shm_size: 256mb
-    environment:
-      - TZ=Europe/Berlin
     logging:
       driver: json-file
       options:
         max-size: 5m
         max-file: 5
-
-  cache:
+    env_file:
+      - ./config/prod.env
+    environment:
+      - TZ=America/Toronto
     volumes:
-      - redis-data:/data
+      - postgres-data:/var/lib/postgresql/data/
+    expose:
+      - 5432
+    command: [
+      "postgres",
+      "-c", "wal_level=logical",
+      "-c", "shared_buffers=256MB",
+      "-c", "effective_cache_size=768MB",
+      "-c", "work_mem=8MB",
+      "-c", "random_page_cost=1.1",
+      "-c", "max_connections=30"
+    ]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
 
-    # You probably want to limit the memory usage of the cache, otherwise it might
-    # hog all the available memory. Remove or change according to your needs.
-    #mem_limit: 5gb
+  # ── depuis services/redis.yaml + surcharge (ajout du volume redis-data) ──
+  cache:
+    image: docker.io/redis
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
+    expose:
+      - 6379
+    volumes:
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-data:/data
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── depuis services/powersync.yaml + surcharge (depends_on web) ──
+  # PowerSync = moteur de synchro hors-ligne de l'app mobile. On le garde pour
+  # rester identique au stack officiel. nginx ne fait que l'attendre au démarrage,
+  # donc s'il n'est pas configuré à fond, ça n'empêche pas wger de tourner.
+  powersync:
+    image: docker.io/journeyapps/powersync-service:latest
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: 3
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    command: ["start", "-r", "unified"]
+    volumes:
+      - ./services/config-powersync:/config:ro
+    env_file:
+      - ./config/prod.env
+    environment:
+      POWERSYNC_CONFIG_PATH: /config/powersync.yaml
+      PS_JWKS_URL: http://web:8000/api/v2/powersync-keys
+    expose:
+      - 8080
+      - 9090
+    restart: unless-stopped
 
   celery_worker:
     image: docker.io/wger/server:latest
@@ -126,20 +185,9 @@ volumes:
   postgres-data:
   celery-beat:
   redis-data:
-
-  # Heads up, if you remove these volumes and use folders directly you need to chown them
-  # to the UID and GID 1000 even if it doesn't exist on your system. Also, they should
-  # be readable by everyone.
-  #
-  # https://wger.readthedocs.io/en/latest/administration/errors.html#missing-static-files
   media:
   static:
 
 networks:
   default:
     name: wger_network
-
-include:
-  - path: ./services/postgres.yaml
-  - path: ./services/powersync.yaml
-  - path: ./services/redis.yaml
