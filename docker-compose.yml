@@ -3,6 +3,9 @@
 # l'erreur "services.db conflicts with imported resource" sur les vieilles
 # versions de Docker Compose. Les dossiers ./config et ./services/config-powersync
 # du dépôt sont toujours nécessaires (ils sont clonés avec le repo).
+#
+# SECRET_KEY et SIGNING_KEY sont injectés par Portainer (Stack > Environment
+# variables), donc ils ne sont jamais committés dans le fork Git.
 
 services:
   web:
@@ -19,6 +22,9 @@ services:
         condition: service_healthy
     env_file:
       - ./config/prod.env
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - SIGNING_KEY=${SIGNING_KEY}
     volumes:
       - static:/home/wger/static
       - media:/home/wger/media
@@ -151,6 +157,9 @@ services:
     command: /start-worker
     env_file:
       - ./config/prod.env
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - SIGNING_KEY=${SIGNING_KEY}
     volumes:
       - media:/home/wger/media
     depends_on:
@@ -172,10 +181,13 @@ services:
         max-size: 10m
         max-file: 3
     command: /start-beat
-    volumes:
-      - celery-beat:/home/wger/beat/
     env_file:
       - ./config/prod.env
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - SIGNING_KEY=${SIGNING_KEY}
+    volumes:
+      - celery-beat:/home/wger/beat/
     depends_on:
       celery_worker:
         condition: service_healthy
